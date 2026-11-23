@@ -227,9 +227,12 @@ def load_config(root):
     if (not isinstance(config_names, list)
             or not all(isinstance(x, str) and x.strip() for x in config_names)):
         raise GuardError(f"{path}: config_names must be a list of non-empty name strings.")
+    expect = data.get("expect")
+    if expect is not None and (not isinstance(expect, int) or isinstance(expect, bool) or expect < 1):
+        raise GuardError(f"{path}: expect must be a whole number of 1 or more, or left out.")
     files = [p if os.path.isabs(p) else os.path.join(root, p) for p in kf]
     return {"key_files": [os.path.abspath(p) for p in files], "suspect": suspect,
-            "config_names": {x.strip() for x in config_names}}
+            "config_names": {x.strip() for x in config_names}, "expect": expect}
 
 
 def real(p):
@@ -271,6 +274,26 @@ class Registry(dict):
         self.lens = sorted(self.roll)
         if anchors and len(anchors) <= MAX_ANCHORS:
             self.anchor_re = re.compile("(?=(?:" + "|".join(re.escape(a) for a in sorted(anchors)) + "))")
+
+
+PLACEHOLDER = re.compile(r"""\A(?:
+    \$\{[^}]*\}          # ${NAME} or ${NAME:-default}
+  | \$[A-Za-z_][A-Za-z0-9_]*  # $NAME
+  | %[^%]*%              # %NAME% (Windows)
+  | <[^>]*>              # <your-key-here>
+  | \{\{[^}]*\}\}         # {{NAME}}
+  | x+ | X+ | \.+ | -+   # xxxxxxxx, ........, --------
+)\Z""", re.VERBOSE)
+
+
+def is_placeholder(value):
+    """True when a vault line holds a stand-in rather than a credential.
+
+    A placeholder is long enough to pass the length filter, so without this a file
+    of stand-ins registers happily and the guard watches nothing. Found by Chadrien
+    Solance, 23-nov-2026. Only whole-value stand-ins count: a real key that merely
+    contains a brace is still a key."""
+    return bool(PLACEHOLDER.match(value.strip()))
 
 
 # ---------------------------------------------------------------- PART 2: learner
@@ -323,6 +346,7 @@ def learn(cfg, root):
     note_entries = []
     truncated_entries = []
     empty_vaults = []
+    placeholder_entries = []
     for vf in cfg["key_files"]:
         entries, notes, truncated = read_vault(vf)
         if not entries and not notes:
@@ -336,6 +360,9 @@ def learn(cfg, root):
             for value in values:
                 if len(value) < MIN_LEN:
                     continue
+                if is_placeholder(value):
+                    placeholder_entries.append((vf, name))
+                    continue
                 names_by_hash.setdefault(sha(value), set()).add(name)
                 plain[value] = True
     registry = Registry({h: ", ".join(sorted(ns)) for h, ns in names_by_hash.items()})
@@ -345,6 +372,7 @@ def learn(cfg, root):
     registry.note_entries = note_entries
     registry.truncated_entries = truncated_entries
     registry.empty_vaults = empty_vaults
+    registry.placeholder_entries = placeholder_entries
     write_registry(root, registry)
     return registry
 
@@ -1016,6 +1044,14 @@ def main(argv=None, stdin=None):
             where = f" Empty key file(s): {empty}." if empty else ""
             raise GuardError("the vault holds no value of 12 or more characters, so there is nothing to guard. "
                              "Put NAME=value lines in the key_files." + where)
+
+        expect = cfg.get("expect")
+        if expect is not None and len(registry) != expect:
+            raise GuardError(
+                f"expected {expect} key(s), registered {len(registry)}. The count in "
+                f"{CONFIG_FILE} and what the key files actually hold do not agree, so "
+                "this guard is not watching what you think it is. Fix the key files, or "
+                "correct expect, and run learn again.")
         vault = {real(p) for p in cfg["key_files"]}
         print_config_exclusions(registry)
         if args.cmd == "learn":
