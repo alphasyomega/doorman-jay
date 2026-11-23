@@ -18,6 +18,14 @@ only their fingerprints, so he can be certain instead of suspicious.
 That rule is the owner's, and it is the whole difference between this guard and
 the one before it.
 
+## Found by readers
+
+**Chadrien Solance ([@SolanceLab](https://github.com/SolanceLab))** — asked whether
+`learn` fails loudly when a listed path yields no fingerprints, or only reports a
+count. Building his answer uncovered the deeper bug: **a placeholder is longer than
+the length floor, so a file of stand-ins registered happily.** `expect` and the
+placeholder check both come from that question.
+
 ## Named in the work this came out of
 
 This tool was written alongside others, and those carry ideas worth naming even

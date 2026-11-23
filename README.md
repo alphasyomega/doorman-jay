@@ -94,9 +94,17 @@ Lines of `NAME=value`. That is all. A `.env`, or anything shaped like one.
 
 🔴 **What Jay cannot read** — and will tell you so rather than reporting clean:
 
-- **Placeholders instead of values.** We pointed it at a file whose every line read
-  `API_KEY=${REAL_KEY_NAME}`. It registered the placeholders, guarded nothing, and
-  said it was fine. **Check that `learn` reports the number of keys you expect.**
+- **Placeholders instead of values.** A stand-in is longer than the 12-character
+  floor, so a file of them used to register happily and guard nothing. **`learn`
+  now sets them aside**: `${NAME}`, `$NAME`, `%NAME%`, `<your-key-here>`,
+  `{{NAME}}`, `xxxxxxxx`, `........` and `--------` as whole values. *A real key
+  that merely contains a brace is still a key.* If a file holds nothing else, it
+  refuses to run.
+- **A file that is PART placeholders.** Twelve stand-ins and two real keys reads as
+  a healthy vault of two — which is correct, and is not what you meant if you were
+  expecting fourteen. **Set `expect = 14` in the config and `learn` refuses when
+  the count does not match**, naming both numbers, instead of printing a count
+  nobody reads. *Suggested by Chadrien Solance.*
 - **Values that live only in environment variables**, in no file at all. Write them
   into a key file Jay can read, or he cannot know them.
 - **An inventory written in prose.** Useful to you, unreadable to a parser.
@@ -139,6 +147,7 @@ now you trust it.**
    # key_files  = ["C:/secrets/keys.env"]          # ...or wherever yours live. Jay reads what you list.
    suspect      = false                             # optional; see "The switch"
    config_names = ["SUPPORT_EMAIL", "PUBLIC_SITE_URL"]  # optional; entries that are not secrets
+   # expect     = 14                              # optional; learn refuses if the count does not match
    ```
 
 2. Register your keys:
