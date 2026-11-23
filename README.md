@@ -59,52 +59,84 @@ tell.
 
 ---
 
-## 🔎 Before you install: find your keys, then put them somewhere
+## 🔎 Before you install: know where your keys actually are
 
 **This guard can only protect keys it has been shown.** So the first step is not
 installing it — it is knowing where your credentials actually are. Most people,
 including the people who wrote this, did not.
 
-We ran this on our own machine and found three different situations in one
-afternoon:
+### Your keys stay where they are
 
-- A file we believed held our keys held **none of them**. Every line was a
-  placeholder: `API_KEY=${REAL_KEY_NAME}`. The guard dutifully registered the
-  placeholders, so it was guarding nothing and we did not know.
-- The **live** values were environment variables, not in any file at all.
-- The rest were in a human inventory written as prose, which no parser reads.
+🔑 **Jay comes to your keys. You do not move your keys for Jay.**
 
-Three practices came out of that, in this order:
+If you keep a `.env` inside each project — which is what most people do — that is
+fine. In that project's `doorman.toml` you point `key_files` at that project's own
+`.env`. Fifty projects, fifty `.env` files, fifty configs, each naming its own.
+**Nothing has to be gathered into one pile.**
 
-**① Find them.** Search for the files first (`.env`, `*.env`, `credentials.json`,
-`token.json`, `*.key`) and then for the names: grep your configs for `API_KEY`,
+If instead you keep your credentials in one place outside your repositories, point
+`key_files` there. **Jay reads whatever paths you list.** It has no opinion.
+
+### Why per repository, then?
+
+**Because what differs between projects is not the keys. It is what to forgive.**
+
+One project's `.env` holds a public support address and a site URL beside its real
+secrets — those must never raise an alarm. Another project has no keys at all.
+**A single machine-wide setting would have one answer for all of them**, and a guard
+that cries wolf in one repository is a guard you switch off for every repository.
+
+So: **the config is per repository. Where your keys live is up to you.**
+
+### What a key file has to look like
+
+Lines of `NAME=value`. That is all. A `.env`, or anything shaped like one.
+
+🔴 **What Jay cannot read** — and will tell you so rather than reporting clean:
+
+- **Placeholders instead of values.** We pointed it at a file whose every line read
+  `API_KEY=${REAL_KEY_NAME}`. It registered the placeholders, guarded nothing, and
+  said it was fine. **Check that `learn` reports the number of keys you expect.**
+- **Values that live only in environment variables**, in no file at all. Write them
+  into a key file Jay can read, or he cannot know them.
+- **An inventory written in prose.** Useful to you, unreadable to a parser.
+
+### Finding them in the first place
+
+**Search by name, not by value.** Look for the files (`.env`, `*.env`,
+`credentials.json`, `token.json`, `*.key`), then grep your configs for `API_KEY`,
 `TOKEN`, `SECRET`, and list the environment variables whose names contain them.
-**Do it by name, not by value** — you do not need to read a single secret to
-build this list, and you should not paste one into a terminal, a chat or an
-agent's context.
+**You do not need to read a single secret to build this list, and you should not
+paste one into a terminal, a chat, or an agent's context.**
 
-**② Put them somewhere, once.** Pick one location **outside every repository**
-and move them there. A credential inside a project folder is one `rsync`, one
-backup, one copied folder away from leaving — being listed in `.gitignore`
-protects you from `git`, and from nothing else. Then update whatever reads them
-to that one path, and make each program **stop and say so** if the file is
-missing: starting up without its keys fails later and somewhere else.
+### Two habits of ours — offered, not required
 
-**③ Keep an inventory, and know it is not the source.** A written list of which
-key is which, when it was rotated and which are revoked is worth having — but a
-hand-written label is not proof. The live value is what the program reads; the
-inventory is what you read. When they disagree, the program wins.
+**Neither of these is needed for Jay to work.** They are what we do, and why.
 
-**Only then install the guard**, and point `key_files` at the files that really
-hold values. If you skip this, you will install a guard that knows nothing and
-reports clean — which is worse than no guard, because now you trust it.
+**Keeping the values outside every repository.** A credential inside a project
+folder is one `rsync`, one backup, one copied folder away from leaving. Being
+listed in `.gitignore` protects you from `git`, and from nothing else. *If you do
+move them, make each program **stop and say so** when the file is missing — starting
+up without its keys fails later, somewhere else, confusingly.*
+
+**Keeping an inventory, and knowing it is not the source.** A list of which key is
+which, when it was rotated, which are revoked — worth having. But a hand-written
+label is not proof. **The live value is what the program reads. When they disagree,
+the program wins.**
+
+---
+
+🔴 **Whatever you choose, point `key_files` at files that really hold values.**
+A guard that knows nothing reports clean — **which is worse than no guard, because
+now you trust it.**
 
 ## 📦 Install
 
 1. Create `doorman.toml` at the root of the repository you want guarded:
 
    ```toml
-   key_files    = [".env", "C:/secrets/keys.env"]   # the files holding your real credentials
+   key_files    = [".env"]                         # this project's own key file...
+   # key_files  = ["C:/secrets/keys.env"]          # ...or wherever yours live. Jay reads what you list.
    suspect      = false                             # optional; see "The switch"
    config_names = ["SUPPORT_EMAIL", "PUBLIC_SITE_URL"]  # optional; entries that are not secrets
    ```
