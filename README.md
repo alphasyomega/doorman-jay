@@ -63,7 +63,7 @@ tell.
 
 **This guard can only protect keys it has been shown.** So the first step is not
 installing it — it is knowing where your credentials actually are. Most people,
-including the people who wrote this, do not.
+including the people who wrote this, did not.
 
 We ran this on our own machine and found three different situations in one
 afternoon:
@@ -209,9 +209,8 @@ it off. So is a silent miss. Both are listed here.
 
   And the cost of trying would be the guard itself. To catch an encoded key he would
   have to **guess** — flagging every long random-looking string: hashes, ids, encoded
-  blobs. **That is how the guard before him produced nine false alarms out of
-  fourteen, and a guard that cries wolf is a guard you switch off.** A guard you
-  switch off catches nothing at all.
+  blobs. **A guard that cries wolf is a guard you switch off — and a guard you
+  switch off catches nothing at all.**
 
   **He stops accidents, not smuggling.**
 - **Anything that is not UTF-8 text** — UTF-16 files, binaries, images — counts
