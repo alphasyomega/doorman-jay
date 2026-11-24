@@ -30,32 +30,37 @@ code on your machine or can edit your hooks, this guard is not in their way. If
 you need an audited scanner across many repositories and many contributors, use
 a product built for that.
 
+### In the owner's words, because it keeps getting forgotten
+
+*Written 23-nov-2026, the night we spent an evening hardening this against an
+attacker nobody asked us to defend against.*
+
+> **"We are asking for a small padlock on the door. If somebody comes from
+> outside and knocks the door down, that is something else. That is another
+> tool."**
+>
+> **"This is a key scanner, nothing more. It is not a bazooka, and it is not a
+> guard post with armed guards. It is not a security tool, if that is what you
+> are thinking. It is a scanner so your little keys do not get out. That's all."**
+
+**This is built for people who build small systems for themselves** — their own
+home, their own notes, their own companions' memory. Not for a product going out
+to the public, not for a SaaS, not for anything that needs to survive someone
+trying to break it.
+
+**And it is built around a key file you barely touch.** You add a credential when
+you sign up for a new service — a handful of times a month at most. You do not
+edit it daily, and you very rarely delete anything from it. **When you do add one,
+you show it to the guard, and from then on he keeps it home.**
+
+🔴 **So the question that decides every future feature is: does this stop a key
+of mine from getting out?** If it instead defends against someone replacing,
+deleting or forging a key, **that belongs in another tool.** Think small. Thinking
+big is a good instinct and it is the wrong one here.
+
 **It expects you to configure it for your own setup.** There is no sensible
 default that fits every repository, and it does not try to invent one.
 
-### Why it is configured per repository, and not once for your whole machine
-
-Git can be told to use one hooks folder for every repository on a machine, and
-the installer can do that (`--machine-wide`). **The guard itself still works
-repository by repository, and that is not an oversight.**
-
-A guard that knows its keys needs to be told, for each repository, **which files
-hold the real credentials** and **which entries in them are not secrets**. Those
-answers are different in every project: a web app keeps its keys in `.env`
-beside a public URL, a script reads one key from a file outside the repository
-altogether, a notes folder has no keys at all. There is no machine-wide answer,
-so there is no machine-wide configuration.
-
-The consequence, stated plainly: **a repository with no `doorman.toml` is not
-guarded.** The hooks let the commit through and print that they checked nothing.
-Installing the hooks once for the whole machine does **not** protect your
-repositories — it only puts the guard in the doorway. Each repository still needs
-its own `doorman.toml` and its own `learn`.
-
-**If you want one command to see where you stand, run `door_watch.py --repo
-<path>` per repository.** It reports whether the hooks are installed there and
-whether a fake key is actually stopped — and it says so plainly when it cannot
-tell.
 
 ---
 
@@ -77,34 +82,22 @@ fine. In that project's `doorman.toml` you point `key_files` at that project's o
 If instead you keep your credentials in one place outside your repositories, point
 `key_files` there. **Jay reads whatever paths you list.** It has no opinion.
 
-### Why per repository, then?
-
-**Because what differs between projects is not the keys. It is what to forgive.**
-
-One project's `.env` holds a public support address and a site URL beside its real
-secrets — those must never raise an alarm. Another project has no keys at all.
-**A single machine-wide setting would have one answer for all of them**, and a guard
-that cries wolf in one repository is a guard you switch off for every repository.
-
-So: **the config is per repository. Where your keys live is up to you.**
-
 ### What a key file has to look like
 
 Lines of `NAME=value`. That is all. A `.env`, or anything shaped like one.
 
-🔴 **What Jay cannot read** — and will tell you so rather than reporting clean:
+🔴 **What Jay calls out when learning**:
 
-- **Placeholders instead of values.** A stand-in is longer than the 12-character
-  floor, so a file of them used to register happily and guard nothing. **`learn`
-  now sets them aside**: `${NAME}`, `$NAME`, `%NAME%`, `<your-key-here>`,
-  `{{NAME}}`, `xxxxxxxx`, `........` and `--------` as whole values. *A real key
-  that merely contains a brace is still a key.* If a file holds nothing else, it
-  refuses to run.
-- **A file that is PART placeholders.** Twelve stand-ins and two real keys reads as
-  a healthy vault of two — which is correct, and is not what you meant if you were
-  expecting fourteen. **Set `expect = 14` in the config and `learn` refuses when
-  the count does not match**, naming both numbers, instead of printing a count
-  nobody reads. *Suggested by Chadrien Solance.*
+- **An empty value.** `learn` does not register it and names its file and entry,
+  without printing the value.
+- **Short values and stand-ins.** `learn` registers every non-empty declared
+  value, including values under 12 characters and stand-ins such as `${NAME}`,
+  `changeme-changeme`, and `your_api_key_here`. It reports the file and entry as
+  short or doubtful so the owner can inspect the declaration. Values under eight
+  characters are additionally reported as recorded but not watched: they remain
+  in the registry, but searching them would match almost every line. A real credential
+  that merely contains a filler word, like `AKIAIOSFODNN7EXAMPLE`, is registered
+  without being called doubtful.
 - **Values that live only in environment variables**, in no file at all. Write them
   into a key file Jay can read, or he cannot know them.
 - **An inventory written in prose.** Useful to you, unreadable to a parser.
@@ -132,11 +125,12 @@ which, when it was rotated, which are revoked — worth having. But a hand-writt
 label is not proof. **The live value is what the program reads. When they disagree,
 the program wins.**
 
----
-
 🔴 **Whatever you choose, point `key_files` at files that really hold values.**
 A guard that knows nothing reports clean — **which is worse than no guard, because
 now you trust it.**
+
+
+---
 
 ## 📦 Install
 
@@ -166,6 +160,43 @@ now you trust it.**
    python install.py
    ```
 
+
+### Why it is configured per repository, and not once for your whole machine
+
+Git can be told to use one hooks folder for every repository on a machine, and
+the installer can do that (`--machine-wide`). **The guard itself still works
+repository by repository, and that is not an oversight.**
+
+A guard that knows its keys needs to be told, for each repository, **which files
+hold the real credentials** and **which entries in them are not secrets**. Those
+answers are different in every project: a web app keeps its keys in `.env`
+beside a public URL, a script reads one key from a file outside the repository
+altogether, a notes folder has no keys at all. There is no machine-wide answer,
+so there is no machine-wide configuration.
+
+The consequence, stated plainly: **a repository with no `doorman.toml` is not
+guarded.** The hooks let the commit through and print that they checked nothing.
+Installing the hooks once for the whole machine does **not** protect your
+repositories — it only puts the guard in the doorway. Each repository still needs
+its own `doorman.toml` and its own `learn`.
+
+**If you want one command to see where you stand, run `door_watch.py --repo
+<path>` per repository.** It reports whether the hooks are installed there and
+whether a fake key is actually stopped — and it says so plainly when it cannot
+tell.
+
+
+
+**Because what differs between projects is not the keys. It is what to forgive.**
+
+One project's `.env` holds a public support address and a site URL beside its real
+secrets — those must never raise an alarm. Another project has no keys at all.
+**A single machine-wide setting would have one answer for all of them**, and a guard
+that cries wolf in one repository is a guard you switch off for every repository.
+
+So: **the config is per repository. Where your keys live is up to you.**
+
+
 ---
 
 ## ⌨️ Commands
@@ -194,6 +225,7 @@ Every command takes `--repo <dir>`.
 **Exit 3 exists on purpose.** A guard that prints "clean" after skipping a
 symlinked folder or a file nobody could decode would tell you a drawer is safe
 on the strength of files nobody looked at.
+
 
 ---
 
@@ -225,6 +257,7 @@ reports anything that looks like a credential **by shape**, from a short list of
 provider prefixes. **Turning it on means accepting false alarms**, because shape
 is a guess and this tool otherwise refuses to guess.
 
+
 ---
 
 ## 📍 Limits and scope — what he catches, and what he does not
@@ -235,7 +268,8 @@ it off. So is a silent miss. Both are listed here.
 ### What it cannot see
 
 - **A value that is not written plainly.** The guard matches the exact characters
-  of a registered value. A key split across lines, assembled from pieces, written
+  of a registered value that is at least eight characters long. Shorter values
+  are recorded but not watched so they cannot match almost every line. A key split across lines, assembled from pieces, written
   with escapes inside a single string, base64-encoded, URL-escaped or reversed is
   **not found**.
 
@@ -274,8 +308,11 @@ it off. So is a silent miss. Both are listed here.
   something that never happened.
 - **An inline comment after a value** (`NAME=value # note`) becomes part of the
   value. Keep key-file lines to `NAME=value`.
-- **Values under 12 characters are skipped** by `learn`. A short secret is not
-  registered, and a 12-character threshold is a judgement, not a law.
+- **Short values are registered** by `learn` and reported with their file and
+  entry name. The 12-character threshold is a diagnostic, not a filter. Values
+  shorter than eight characters are recorded but not searched, because that
+  exact-length search would match almost every line; this is not a judgement
+  about whether they are secrets.
 
 ### Without configuration
 
@@ -299,9 +336,9 @@ Stated so you can judge the guard, rather than trust it:
   declared too large to decode (over 64 MB). It streams them in 1 MB blocks
   without decoding, but a multi-gigabyte file is walked on every `check`.
 
----
 
-## ⚠️ Warnings — read before you install him
+### Warnings — read before you install him
+
 
 > 🔴 **HE GUARDS ONE HOUSE: YOURS. TEACH HIM YOUR OWN KEYS.**
 > He knows nothing out of the box. Until you register your keys, he lets everything through.
@@ -311,6 +348,7 @@ Stated so you can judge the guard, rather than trust it:
 🚪 **Install him per repository, not once for your whole machine.** A global hooks path replaces whatever guard is already there, and between taking one out and putting the other in there is a moment with nobody watching.
 
 🙈 **A false alarm teaches you to switch the guard off.** If he shouts about something that is not a secret — an address, a name that appears in your docs on purpose — pardon it in his config rather than ignoring him. A guard you ignore is not a guard.
+
 
 ---
 

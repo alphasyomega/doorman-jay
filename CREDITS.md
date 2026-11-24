@@ -26,6 +26,19 @@ count. Building his answer uncovered the deeper bug: **a placeholder is longer t
 the length floor, so a file of stand-ins registered happily.** `expect` and the
 placeholder check both come from that question.
 
+**And again**, with the stand-ins that carry no brackets or `$` at all:
+`your_api_key_here`, `changeme-changeme`. Both are longer than the length floor,
+so both registered as credentials. The answer went a different way than he
+proposed: everything declared is registered, and anything that looks like a
+stand-in is named out loud — file and entry, never the value. **Setting them
+aside would have left a real credential unguarded in the one case where somebody
+is genuinely running `changeme-changeme` as a password.**
+
+Running that fix for real turned up a second hole his question did not cover:
+with nothing discarded any more, a one-character value registered and then
+matched almost every line — **22 false alarms on our own repository**, which is
+the defect that kills guards. Registering and searching are separate now.
+
 ## Named in the work this came out of
 
 This tool was written alongside others, and those carry ideas worth naming even

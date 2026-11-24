@@ -23,17 +23,20 @@ THE FOUR PARTS
               guard learns from, and they are never themselves findings.
   2. LEARNER  Reads each vault file as lines `NAME=value` (blank lines and
               lines starting with # ignored, one pair of surrounding single or
-              double quotes stripped, values under 12 characters skipped) and
+              double quotes stripped; empty values are not registered and short
+              or stand-in-looking values are registered with a warning) and
               writes `.doorman-known` at the repository root: one line per
               key, `<64 hex>  <NAME>`. That file holds fingerprints, never a
               credential, and may be committed safely. It is written to a
               temporary file in the same directory and swapped in with
               os.replace, so a failed write never leaves a half file. It is
               re-learned on EVERY run: a rotated key needs no action.
-  3. MATCHER  Finds every registered value WHEREVER IT APPEARS in a line, by
-              LENGTH and not by separators. The registry keeps each value's
-              character length beside its fingerprint. For each distinct
-              registered length L the matcher hashes the windows of L characters
+  3. MATCHER  Finds every registered value of at least 8 characters WHEREVER IT
+              APPEARS in a line, by LENGTH and not by separators. Shorter values
+              remain registered but are reported as recorded but not watched: an
+              exact-length search would match almost every line. The registry
+              keeps each searchable value's character length beside its
+              fingerprint. For each distinct searchable length L the matcher hashes the windows of L characters
               of the line and compares them with the registry, so what touches
               the key (backticks, a full stop, `key#note`, `Bearer-key`, letters
               glued on) does not matter, and a registered value that itself holds
@@ -97,10 +100,12 @@ turns it on accepts occasional false alarms: shape is a guess, and this tool
 otherwise refuses to guess. A suspect finding exits 1 like a registered one.
 
 KNOWN LIMITS, said out loud:
-  * Any registered value is found wherever it appears in a line, whatever
-    touches it and whether or not it holds separator characters. What it cannot
-    see is a value split across two lines, or encoded (base64, URL-escaped,
-    reversed): the guard matches the exact characters of the registered value.
+  * Any registered value of at least 8 characters is found wherever it appears
+    in a line, whatever touches it and whether or not it holds separator
+    characters. Shorter registered values are recorded but not watched because
+    they would match almost every line. What it cannot see is a value split
+    across two lines, or encoded (base64, URL-escaped, reversed): the guard
+    matches exact characters.
   * A DELETE push (local sha all zeros) sends no objects, so its ref names are not
     scanned: deleting a badly named branch is the cure, not an event.
   * A path that is not valid UTF-8 is decoded loosely and recorded as NOT READ.
@@ -114,6 +119,7 @@ KNOWN LIMITS, said out loud:
   * Anything that is not UTF-8 text (UTF-16 files, binaries) counts as NOT READ.
 """
 import sys, os, re, json, hashlib, argparse, tempfile, subprocess, contextlib, io, shutil, datetime
+from pathlib import Path
 from itertools import accumulate
 
 # Windows' console arrives as cp1252; a report with a non-ASCII NAME would kill
@@ -129,6 +135,8 @@ REGISTRY_FILE = ".doorman-known"
 ACK_FILE = ".doorman-unread"
 LASTRUN_FILE = ".doorman-lastrun"
 MIN_LEN = 12
+# Keeps tiny registered values from matching almost every line; it is not a judgement about whether they are secrets.
+SEARCH_MIN = 8
 MAX_BYTES = 64 * 1024 * 1024          # files above this are reported as not read
 PRUNED_DIRS = {".git"}                # not walked (history is checked by pre-push); recorded as NOT READ
 
@@ -254,7 +262,7 @@ def roll_of(text):
 class Registry(dict):
     """fingerprint (sha256) -> NAME, plus what the window matcher needs.
 
-    `lengths` keeps each value's character length beside its fingerprint; `lens` is the
+    `lengths` keeps each searchable value's character length beside its fingerprint; `lens` is the
     distinct lengths. `roll` and `anchor_re` are derived from the vault in memory when
     the registry is sealed and are never written to disk or printed."""
 
@@ -268,6 +276,8 @@ class Registry(dict):
     def seal(self, values):
         anchors = set()
         for v in values:
+            if len(v) < SEARCH_MIN:
+                continue
             self.lengths[sha(v)] = len(v)
             self.roll.setdefault(len(v), set()).add(roll_of(v))
             anchors.add(v[:ANCHOR_LEN])
@@ -286,14 +296,38 @@ PLACEHOLDER = re.compile(r"""\A(?:
 )\Z""", re.VERBOSE)
 
 
-def is_placeholder(value):
-    """True when a vault line holds a stand-in rather than a credential.
+# A stand-in with no punctuation at all: your_api_key_here, changeme-changeme.
+# Every word of the value has to be a filler word. A real credential that merely
+# CONTAINS one -- AKIAIOSFODNN7EXAMPLE -- stays a key: discarding a real key is
+# the failure this guard exists to avoid, while an extra registered stand-in is
+# caught by `expect`. Fail toward keeping it.
+FILLER = {
+    "your", "my", "our", "the", "a", "an", "is", "to", "be", "of", "with", "for", "in",
+    "put", "insert", "replace", "change", "changeme", "fill", "add", "set",
+    "paste", "enter", "type", "write", "goes", "go",
+    "placeholder", "example", "sample", "dummy", "fake", "test", "testing",
+    "todo", "fixme", "tbd", "xxx", "xxxx", "none", "null", "empty", "notset",
+    "here", "value", "values", "string", "text", "something",
+    "api", "key", "keys", "apikey", "secret", "token", "password", "pass",
+    "pwd", "credential", "credentials", "auth", "id", "url", "email", "user",
+    "username", "name", "account", "client", "app", "real",
+}
+PLAIN_VALUE = re.compile(r"\A[A-Za-z0-9 _.\-]+\Z")
 
-    A placeholder is long enough to pass the length filter, so without this a file
-    of stand-ins registers happily and the guard watches nothing. Found by Chadrien
-    Solance, 23-nov-2026. Only whole-value stand-ins count: a real key that merely
-    contains a brace is still a key."""
-    return bool(PLACEHOLDER.match(value.strip()))
+def is_placeholder(value):
+    """True when a vault line holds a stand-in that should be labelled doubtful.
+
+    Only whole-value stand-ins count: a real key that merely contains a brace is
+    still a key."""
+    v = value.strip()
+    if PLACEHOLDER.match(v):
+        return True
+    # Bracket-free stand-ins: API_KEY=your_api_key_here, SECRET=changeme-changeme.
+    # Found by Chadrien Solance, 23-nov-2026, after the bracketed ones were closed.
+    if not PLAIN_VALUE.match(v):
+        return False
+    words = [w for w in re.split(r"[ _.\-]+", v.lower()) if w]
+    return bool(words) and all(w in FILLER or w.isdigit() for w in words)
 
 
 # ---------------------------------------------------------------- PART 2: learner
@@ -346,7 +380,10 @@ def learn(cfg, root):
     note_entries = []
     truncated_entries = []
     empty_vaults = []
-    placeholder_entries = []
+    empty_entries = []
+    short_entries = []
+    doubtful_entries = []
+    unwatched_entries = []
     for vf in cfg["key_files"]:
         entries, notes, truncated = read_vault(vf)
         if not entries and not notes:
@@ -358,13 +395,17 @@ def learn(cfg, root):
                 found_config_names.setdefault(name, name)
                 continue
             for value in values:
-                if len(value) < MIN_LEN:
-                    continue
-                if is_placeholder(value):
-                    placeholder_entries.append((vf, name))
+                if not value.strip():
+                    empty_entries.append((vf, name))
                     continue
                 names_by_hash.setdefault(sha(value), set()).add(name)
                 plain[value] = True
+                if len(value) < MIN_LEN:
+                    short_entries.append((vf, name))
+                if len(value) < SEARCH_MIN:
+                    unwatched_entries.append((vf, name))
+                if is_placeholder(value):
+                    doubtful_entries.append((vf, name))
     registry = Registry({h: ", ".join(sorted(ns)) for h, ns in names_by_hash.items()})
     registry.seal(plain)
     registry.config_excluded = sorted(found_config_names.values(), key=str.casefold)
@@ -372,7 +413,11 @@ def learn(cfg, root):
     registry.note_entries = note_entries
     registry.truncated_entries = truncated_entries
     registry.empty_vaults = empty_vaults
-    registry.placeholder_entries = placeholder_entries
+    entry_order = lambda entry: (entry[0].casefold(), entry[1].casefold())
+    registry.empty_entries = sorted(empty_entries, key=entry_order)
+    registry.short_entries = sorted(short_entries, key=entry_order)
+    registry.unwatched_entries = sorted(unwatched_entries, key=entry_order)
+    registry.doubtful_entries = sorted(doubtful_entries, key=entry_order)
     write_registry(root, registry)
     return registry
 
@@ -628,6 +673,12 @@ def print_config_exclusions(registry):
         names = sorted({redact(name, registry, False) for _, name, _ in registry.truncated_entries})
         print(f"warning: took only the first token from {len(registry.truncated_entries)} Markdown entry(s): "
               f"{', '.join(names)}")
+    for label, entries in (("empty", registry.empty_entries),
+                           ("short", registry.short_entries),
+                           ("recorded but not watched", registry.unwatched_entries),
+                           ("doubtful", registry.doubtful_entries)):
+        for path, name in entries:
+            print(f"{label} value: {redact(path, registry, False)} ({redact(name, registry, False)})")
 
 
 class Report:
@@ -1039,10 +1090,11 @@ def main(argv=None, stdin=None):
             return 0
         cfg = load_config(root)
         registry = learn(cfg, root)
+        print_config_exclusions(registry)
         if not registry:
             empty = ", ".join(redact(path, registry, False) for path in registry.empty_vaults)
             where = f" Empty key file(s): {empty}." if empty else ""
-            raise GuardError("the vault holds no value of 12 or more characters, so there is nothing to guard. "
+            raise GuardError("the vault holds no non-empty value, so there is nothing to guard. "
                              "Put NAME=value lines in the key_files." + where)
 
         expect = cfg.get("expect")
@@ -1053,7 +1105,6 @@ def main(argv=None, stdin=None):
                 "this guard is not watching what you think it is. Fix the key files, or "
                 "correct expect, and run learn again.")
         vault = {real(p) for p in cfg["key_files"]}
-        print_config_exclusions(registry)
         if args.cmd == "learn":
             names = sorted({redact(n, registry, False) for v in registry.values() for n in v.split(", ")})
             print(f"learned {len(registry)} key(s): {', '.join(names)}")
@@ -1108,9 +1159,18 @@ def selftest():
     key_a = "djtest_" + "A1b2C3d4E5f6G7h8"
     key_b = "djtest_" + "Zz9Yy8Xx7Ww6Vv5U"
     key_c = "Qw3rTy7uIo9p"                      # exactly 12 characters
+    key_d = "djtest_" + "M3n4O5p6Q7r8S9t0"
     short = "abcdefghijk"                       # 11 characters
+    one_character = "q"
+    search_minimum = "12345678"                 # exactly SEARCH_MIN characters
+    real_filler = "AKIAIOSFODNN7EXAMPLE"
+    standin_long = "changeme-changeme"
+    standin_bracket = "${PLACEHOLDER}"
+    standin_short = "xxxxxxxx"
+    standin_words = "your_api_key_here"
     unreg = "sk-" + "Zq9" * 10                  # credential-shaped, never registered
-    values = [key_a, key_b, key_c, short, unreg]
+    values = [key_a, key_b, key_c, key_d, short, one_character, search_minimum, real_filler, standin_long,
+              standin_bracket, standin_short, standin_words, unreg]
 
     tmp = tempfile.mkdtemp(prefix="doorman_selftest_")
     try:
@@ -1119,18 +1179,22 @@ def selftest():
             os.makedirs(os.path.join(root, d))
 
         def w(rel, text, binary=False):
-            path = os.path.join(root, rel)
+            path = Path(root) / rel
             if binary:
                 with open(path, "wb") as fh:
                     fh.write(text)
             else:
                 with open(path, "w", encoding="utf-8", newline="\n") as fh:
                     fh.write(text)
-            return path
+            return str(path)
 
         w("doorman.toml", 'key_files = [".env"]\nsuspect = false\n')
         vault = w(".env", f'# vault\nAPI_ONE="{key_a}"\nexport TOKEN_TWO={key_b}\n'
-                          f'EXACT_TWELVE={key_c}\nSHORT_ONE={short}\n')
+                          f'EXACT_TWELVE={key_c}\nKEY_FOUR={key_d}\nSHORT_ONE={short}\nONE_CHARACTER={one_character}\n'
+                          f'EXACT_SEARCH_MIN={search_minimum}\n'
+                          f'REAL_FILLER={real_filler}\nSTANDIN_LONG={standin_long}\n'
+                          f'STANDIN_BRACKET={standin_bracket}\nSTANDIN_SHORT={standin_short}\n'
+                          f'STANDIN_WORDS={standin_words}\nEMPTY_ONE=\n')
         notes = w("work/notes.txt", f"remember {key_a} for later\n")
         cmd = w("work/cmd.txt", f'curl -sS -H "X-Api-Key: {key_b}" "https://api.example.test/v1?x=1"\n')
         unregf = w("work/unreg.txt", f"token = {unreg}\n")
@@ -1140,16 +1204,26 @@ def selftest():
         R = ["--repo", root]
 
         code, out = run(R + ["learn"])
-        check("learn exits 0 and names 3 keys", code == 0 and "learned 3 key(s)" in out
-              and all(n in out for n in ("API_ONE", "TOKEN_TWO", "EXACT_TWELVE")))
-        check("learn output holds no value", not any(v in out for v in values))
+        check("learn exits 0 and names every non-empty key", code == 0 and "learned 12 key(s)" in out
+              and all(n in out for n in ("API_ONE", "TOKEN_TWO", "EXACT_TWELVE", "KEY_FOUR",
+                                          "SHORT_ONE", "ONE_CHARACTER", "EXACT_SEARCH_MIN", "REAL_FILLER", "STANDIN_LONG", "STANDIN_BRACKET",
+                                          "STANDIN_SHORT", "STANDIN_WORDS")))
+        check("learn output holds no value", not any(v in out for v in values if len(v) >= SEARCH_MIN))
+        check("learn reports empty, short, unwatched, and doubtful entries without values",
+              "empty value:" in out and "EMPTY_ONE" in out
+              and "short value:" in out and "SHORT_ONE" in out and "ONE_CHARACTER" in out and "STANDIN_SHORT" in out
+              and "recorded but not watched value:" in out and "ONE_CHARACTER" in out
+              and "doubtful value:" in out
+              and all(n in out for n in ("STANDIN_LONG", "STANDIN_BRACKET", "STANDIN_SHORT", "STANDIN_WORDS"))
+              and all("REAL_FILLER" not in line for line in out.splitlines() if line.startswith("doubtful value:")))
         with open(os.path.join(root, REGISTRY_FILE), encoding="utf-8") as fh:
             reg = fh.read()
         body = [l for l in reg.splitlines() if l and not l.startswith("#")]
         check("registry holds no value from any fixture", not any(v in reg for v in values))
-        check("registry lines are '<64 hex>  <NAME>' and skip the 11-char value",
-              len(body) == 3 and all(re.match(r"^[0-9a-f]{64}  \w+$", l) for l in body)
-              and "SHORT_ONE" not in reg)
+        check("registry lines are '<64 hex>  <NAME>' and include short and doubtful values",
+              len(body) == 12 and all(re.match(r"^[0-9a-f]{64}  \w+$", l) for l in body)
+              and all(n in reg for n in ("SHORT_ONE", "STANDIN_LONG", "STANDIN_BRACKET",
+                                          "STANDIN_SHORT", "STANDIN_WORDS", "REAL_FILLER", "ONE_CHARACTER", "EXACT_SEARCH_MIN")))
         check("no temp file left behind by the registry write",
               not [f for f in os.listdir(root) if f.endswith(".tmp")])
 
@@ -1157,7 +1231,7 @@ def selftest():
         check("registered key in a file is found and named",
               code == 1 and "API_ONE" in out and f"({len(key_a)} characters)" in out and "notes.txt:1" in out)
         check("report never holds a value or a piece of one",
-              not any(v in out for v in values) and key_a[:8] not in out and key_a[-4:] not in out)
+              not any(v in out for v in values if len(v) >= SEARCH_MIN) and key_a[:8] not in out and key_a[-4:] not in out)
         code, out = run(R + ["check", cmd])
         check("same key inside a longer command line is found", code == 1 and "TOKEN_TWO" in out)
         code, out = run(R + ["check", unregf])
@@ -1166,7 +1240,13 @@ def selftest():
         code, out = run(R + ["check", vault])
         check("the vault file itself is never a finding", code == 0 and "FOUND" not in out)
         code, out = run(R + ["check", shortf])
-        check("a value under 12 characters is ignored", code == 0 and "FOUND" not in out)
+        check("a value under 12 characters is learned and found", code == 1 and "SHORT_ONE" in out)
+        code, out = run(R + ["check", w("work/one-character.txt", one_character * 80 + "\n")])
+        check("a one-character value is recorded but not watched", code == 0 and "FOUND" not in out)
+        code, out = run(R + ["check", w("work/search-minimum.txt", search_minimum + "\n")])
+        check("a value of exactly SEARCH_MIN characters is learned and found", code == 1 and "EXACT_SEARCH_MIN" in out)
+        code, out = run(R + ["check", w("work/standin.txt", f"{standin_long}\n")])
+        check("a stand-in is learned and found", code == 1 and "STANDIN_LONG" in out)
         code, out = run(R + ["check", w("work/exact.txt", f"{key_c}\n")])
         check("a value of exactly 12 characters is learned and found", code == 1 and "EXACT_TWELVE" in out)
 
