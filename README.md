@@ -15,14 +15,16 @@ you did not show him.**
 ## 🖼️ How it works
 
 ```mermaid
-flowchart LR
-    A["your key files<br/>NAME=value"] -->|"learn"| B["Jay<br/>stores fingerprints only"]
-    B --> R[".doorman-known<br/>fingerprints, never values"]
-    C["what you are about to commit"] -->|"check"| B
-    B --> D["clean, it leaves"]
+flowchart TD
+    A["your key files<br/>NAME=value"] -->|learn| B["JAY"]
+    B -.->|writes| R[".doorman-known<br/>fingerprints only"]
+    C["what you are<br/>about to commit"] -->|check| B
+    B --> D["clean<br/>it leaves"]
     B --> E["STOP<br/>which key, where"]
     style B fill:#2d6cdf,color:#fff
     style E fill:#c0392b,color:#fff
+    style D fill:#1e8449,color:#fff
+    style R fill:#f4f4f4,color:#333
 ```
 
 **In words:** you point Jay at the files that hold your keys, he writes down a
