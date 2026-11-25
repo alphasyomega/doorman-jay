@@ -356,12 +356,12 @@ def run_hook_tests(prefix, folder=None):
             ("pre-push",) + _in_throwaway(prefix, _check_pre_push, folder)]
 
 
-def _git_out(args, cwd=None):
-    r = _sh(["git"] + args, cwd=cwd)
+def _git_out(args, cwd=None, env=None):
+    r = _sh(["git"] + args, cwd=cwd, env=env)
     return r.returncode, (r.stdout or "").strip()
 
 
-def repo_hooks_dir(repo):
+def repo_hooks_dir(repo, env=None):
     """Asks git where THIS repository keeps its hooks.
 
     Never a guessed `.git/hooks`: worktrees and submodules keep them elsewhere.
@@ -369,19 +369,80 @@ def repo_hooks_dir(repo):
     """
     if not os.path.isdir(repo):
         return None, "%s is not a folder" % repo
-    code, out = _git_out(["rev-parse", "--git-path", "hooks"], cwd=repo)
+    code, out = _git_out(["rev-parse", "--git-path", "hooks"], cwd=repo, env=env)
     if code != 0 or not out:
         return None, "%s is not inside a git repository" % repo
-    # `--git-path hooks` obeys core.hooksPath. If one is set, the
-    # answer is that shared folder, not this repository's own, and a hook
-    # written there would be a machine-wide change by the back door.
-    code, hp = _git_out(["config", "--get", "core.hooksPath"], cwd=repo)
-    if hp:
+    code, hp = _git_out(["config", "--get", "core.hooksPath"], cwd=repo, env=env)
+    if not hp:
+        return os.path.abspath(os.path.join(repo, out)), None
+
+    code, git_dir = _git_out(["rev-parse", "--absolute-git-dir"], cwd=repo, env=env)
+    if code != 0 or not git_dir:
+        return None, ("core.hooksPath is set (%s), but this repository's own "
+                      "hooks folder could not be determined, so nothing was written." % hp)
+    own_hooks = os.path.abspath(os.path.join(git_dir, "hooks"))
+    if os.path.isabs(hp):
+        configured_hooks = hp
+    else:
+        code, top = _git_out(["rev-parse", "--show-toplevel"], cwd=repo, env=env)
+        if code != 0 or not top:
+            return None, ("core.hooksPath is set (%s), but its location could not be "
+                          "determined, so nothing was written." % hp)
+        configured_hooks = os.path.join(top, hp)
+    try:
+        same_folder = (os.path.normcase(os.path.realpath(own_hooks)) ==
+                       os.path.normcase(os.path.realpath(configured_hooks)))
+    except Exception:
+        return None, ("core.hooksPath is set (%s), but its location could not be "
+                      "determined, so nothing was written." % hp)
+    if not same_folder:
         return None, ("core.hooksPath is set (%s), so this repository's own "
                       "hooks folder is not in use and git reads hooks from "
                       "there instead. Installing there would change every "
                       "repository that shares it, so nothing was written." % hp)
-    return os.path.abspath(os.path.join(repo, out)), None
+    return own_hooks, None
+
+
+def selftest():
+    """Proves the per-repository hooks-path safety decision."""
+    tmp = tempfile.mkdtemp(prefix="doorman_jay_install_selftest_")
+    checks = []
+    try:
+        repo = os.path.join(tmp, "repo")
+        env = _hermetic(tmp)
+        _must(["git", "init", "-q", repo], env=env)
+        own = os.path.join(repo, ".git", "hooks")
+
+        folder, error = repo_hooks_dir(repo, env=env)
+        checks.append(("no core.hooksPath", folder is not None and error is None))
+
+        _must(["git", "config", "core.hooksPath", ".git/hooks"], cwd=repo, env=env)
+        folder, error = repo_hooks_dir(repo, env=env)
+        checks.append(("relative own core.hooksPath", folder is not None and error is None))
+
+        _must(["git", "config", "core.hooksPath", os.path.abspath(own)], cwd=repo, env=env)
+        folder, error = repo_hooks_dir(repo, env=env)
+        checks.append(("absolute own core.hooksPath", folder is not None and error is None))
+
+        other = os.path.join(tmp, "other-hooks")
+        _must(["git", "config", "core.hooksPath", other], cwd=repo, env=env)
+        folder, error = repo_hooks_dir(repo, env=env)
+        expected = ("core.hooksPath is set (%s), so this repository's own "
+                    "hooks folder is not in use and git reads hooks from "
+                    "there instead. Installing there would change every "
+                    "repository that shares it, so nothing was written." % other)
+        checks.append(("different core.hooksPath", folder is None and error == expected))
+    except Exception:
+        checks.append(("selftest setup", False))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    failures = 0
+    for name, ok in checks:
+        print("  %s: %s" % (name, "ok" if ok else "FAILED"))
+        failures += not ok
+    print("  %d checks, %d failures" % (len(checks), failures))
+    return 1 if failures else 0
 
 
 def template_dirs(arg):
@@ -482,7 +543,12 @@ def main():
                    help="print the machine-wide core.hooksPath switch, with its warning")
     ap.add_argument("--test", action="store_true",
                     help="also send a fake key through the door")
+    ap.add_argument("--selftest", action="store_true",
+                    help="prove the per-repository hooks-path safety checks and exit")
     args = ap.parse_args()
+
+    if args.selftest:
+        return selftest()
 
     here = HERE.replace("\\", "/")
     print()
